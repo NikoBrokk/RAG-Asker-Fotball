@@ -1,0 +1,1 @@
+"""Init-modul for Asker Fotball-pakken."""
