@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:  # pragma: no cover - kun for typehinting
+    from huggingface_hub import HfApi
 
 
 def _read_text_file(p: Path) -> str:
@@ -66,3 +69,11 @@ def env_flag(name: str, default: bool = False) -> bool:
     if v is None:
         return default
     return v.strip().lower() in {"1", "true", "yes", "on"}
+
+def get_hf_api() -> "HfApi":
+    """Autentiser og returner en ``HfApi``-klient."""
+    token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        raise RuntimeError("HUGGINGFACEHUB_API_TOKEN mangler")
+    from huggingface_hub import HfApi
+    return HfApi(token=token)
