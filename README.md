@@ -1,3 +1,8 @@
+---
+sdk: streamlit
+app_file: app.py
+---
+
 # RAG Asker Fotball
 
 Dette prosjektet implementerer en enkel Retrieval‑Augmented Generation (RAG) for
