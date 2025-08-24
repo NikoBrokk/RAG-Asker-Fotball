@@ -20,16 +20,17 @@ from src.utils import get_hf_api
 # ---------- Konfig & utils ----------
 
 def _env_flag(name: str, default: bool = False) -> bool:
-    """Hent bool fra env eller secrets uten å feile når secrets.toml mangler."""
-    v = os.getenv(name)
-    if v is None:
-        try:
-            v = st.secrets.get(name)   # prøv å hente secret hvis det finnes
-        except Exception:
-            v = None
-    if v is None:
-        return default
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+    """Hent bool fra env eller secrets case-insensitive."""
+    for key in {name, name.upper(), name.lower()}:
+        v = os.getenv(key)
+        if v is None:
+            try:
+                v = st.secrets.get(key)   # prøv å hente secret hvis det finnes
+            except Exception:
+                v = None
+        if v is not None:
+            return str(v).strip().lower() in {"1", "true", "yes", "on"}
+    return default
 
 
 def _secret(name: str, default=None):
