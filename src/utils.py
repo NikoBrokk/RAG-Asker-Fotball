@@ -64,11 +64,18 @@ def simple_chunks(text: str, size: int = 800, overlap: int = 120) -> List[str]:
 
 
 def env_flag(name: str, default: bool = False) -> bool:
-    """Les boolsk miljøvariabel: "1", "true", "yes" eller "on" blir True."""
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return v.strip().lower() in {"1", "true", "yes", "on"}
+    """Les boolsk miljøvariabel case-insensitive.
+
+    "1", "true", "yes" eller "on" blir ``True``. Funksjonen sjekker både
+    originalnavn, ``upper`` og ``lower`` varianter for å være robust mot
+    små avvik i navngivning av miljøvariabler (f.eks. ``useopenai`` vs
+    ``USE_OPENAI``).
+    """
+    for key in {name, name.upper(), name.lower()}:
+        v = os.getenv(key)
+        if v is not None:
+            return v.strip().lower() in {"1", "true", "yes", "on"}
+    return default
 
 def get_hf_api() -> "HfApi":
     """Autentiser og returner en ``HfApi``-klient."""
