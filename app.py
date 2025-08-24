@@ -20,20 +20,31 @@ from src.utils import get_hf_api
 # ---------- Konfig & utils ----------
 
 def _env_flag(name: str, default: bool = False) -> bool:
-    """Hent bool fra env eller st.secrets."""
+    """Hent bool fra env eller secrets uten å feile når secrets.toml mangler."""
     v = os.getenv(name)
-    if v is None and name in st.secrets:
-        v = str(st.secrets[name])
+    if v is None:
+        try:
+            v = st.secrets.get(name)   # prøv å hente secret hvis det finnes
+        except Exception:
+            v = None
     if v is None:
         return default
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
-USE_OPENAI = _env_flag("USE_OPENAI", False)  # vi bruker TF-IDF nå, men flagget kan stå
-CHAT_MODEL = os.getenv("CHAT_MODEL", st.secrets.get("CHAT_MODEL", "tf-idf"))
-DATA_DIR = Path(os.getenv("DATA_DIR", st.secrets.get("DATA_DIR", "data")))
-KB_DIR = os.getenv("KB_DIR", st.secrets.get("KB_DIR", "kb"))
+
+def _secret(name: str, default=None):
+    """Trygg henter for str-secrets."""
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+USE_OPENAI = _env_flag("USE_OPENAI", False)
+CHAT_MODEL = os.getenv("CHAT_MODEL", _secret("CHAT_MODEL", "tf-idf"))
+DATA_DIR = Path(os.getenv("DATA_DIR", _secret("DATA_DIR", "data")))
+KB_DIR = os.getenv("KB_DIR", _secret("KB_DIR", "kb"))
 DEBUG_UI = _env_flag("DEBUG_UI", False)
-HF_SPACE = os.getenv("HF_SPACE", st.secrets.get("HF_SPACE"))
+HF_SPACE = os.getenv("HF_SPACE", _secret("HF_SPACE"))
 
 hf_space_info = None
 if HF_SPACE:
