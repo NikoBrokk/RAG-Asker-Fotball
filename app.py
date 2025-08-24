@@ -14,6 +14,8 @@ import streamlit as st
 # Lokale moduler
 from src.answer import answer, _expand_query
 from src.ingest import build_index, OPENAI_API_KEY
+from src.utils import get_hf_api
+
 
 # ---------- Konfig & utils ----------
 
@@ -31,6 +33,14 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", st.secrets.get("CHAT_MODEL", "tf-idf"))
 DATA_DIR = Path(os.getenv("DATA_DIR", st.secrets.get("DATA_DIR", "data")))
 KB_DIR = os.getenv("KB_DIR", st.secrets.get("KB_DIR", "kb"))
 DEBUG_UI = _env_flag("DEBUG_UI", False)
+HF_SPACE = os.getenv("HF_SPACE", st.secrets.get("HF_SPACE"))
+
+hf_space_info = None
+if HF_SPACE:
+    try:
+        hf_space_info = get_hf_api().space_info(HF_SPACE)
+    except Exception as e:  # pragma: no cover - kun best effort
+        hf_space_info = {"error": str(e)}
 
 
 def ensure_index() -> None:
@@ -152,3 +162,8 @@ if DEBUG_UI:
     st.sidebar.write("DATA_DIR:", str(DATA_DIR))
     if q:
         st.sidebar.write("Expanded query:", _expand_query(q))
+
+    if HF_SPACE:
+        st.sidebar.write("HF_SPACE:", HF_SPACE)
+        st.sidebar.write("HF info:", hf_space_info)
+
