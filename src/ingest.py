@@ -52,25 +52,35 @@ load_dotenv()
 def _get_secret(name: str) -> Optional[str]:
     """Les konfigurasjonsverdi fra miljøvariabler eller Streamlit Secrets.
 
-    Hvis variabelen ikke finnes, returneres None. Streamlit Secrets
-    brukes som fallback dersom de er tilgjengelige. Denne funksjonen
-    kapsler tilgangen til secrets for å unngå import‑feil i miljøer
-    uten Streamlit.
+    Sjekker flere varianter av navnet (case-insensitive og uten
+    understrek) for å være robust mot skrivefeil.
     """
+    base = name.replace("_", "")
+    variants = {
+        name,
+        name.upper(),
+        name.lower(),
+        base,
+        base.upper(),
+        base.lower(),
+    }
     # 1) Miljøvariabler først
-    val = os.getenv(name)
-    if isinstance(val, str) and val.strip():
-        return val.strip()
+    for key in variants:
+        val = os.getenv(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
     # 2) Streamlit Secrets
     try:
         import streamlit as _st  # lokal import for å unngå sideeffekter
-        try:
-            sval = _st.secrets[name]  # kan kaste KeyError/StreamlitSecretNotFoundError
+        for key in variants:
+            try:
+                sval = _st.secrets[key]
+            except Exception:
+                continue
             if isinstance(sval, str) and sval.strip():
                 return sval.strip()
             return sval
-        except Exception:
-            return None
+        return None
     except Exception:
         return None
 
