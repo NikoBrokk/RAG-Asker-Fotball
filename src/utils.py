@@ -64,14 +64,23 @@ def simple_chunks(text: str, size: int = 800, overlap: int = 120) -> List[str]:
 
 
 def env_flag(name: str, default: bool = False) -> bool:
-    """Les boolsk miljøvariabel case-insensitive.
+    """Les boolsk miljøvariabel case-insensitive og uten understrek.
 
-    "1", "true", "yes" eller "on" blir ``True``. Funksjonen sjekker både
-    originalnavn, ``upper`` og ``lower`` varianter for å være robust mot
-    små avvik i navngivning av miljøvariabler (f.eks. ``useopenai`` vs
-    ``USE_OPENAI``).
+    "1", "true", "yes" eller "on" blir ``True``. Funksjonen prøver flere
+    varianter av navnet for å være robust mot skrivefeil, inkludert
+    forskjellige caser og fjerning av understreker (``USE_OPENAI`` vs
+    ``useopenai``).
     """
-    for key in {name, name.upper(), name.lower()}:
+    base = name.replace("_", "")
+    variants = {
+        name,
+        name.upper(),
+        name.lower(),
+        base,
+        base.upper(),
+        base.lower(),
+    }
+    for key in variants:
         v = os.getenv(key)
         if v is not None:
             return v.strip().lower() in {"1", "true", "yes", "on"}
