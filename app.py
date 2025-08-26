@@ -49,7 +49,7 @@ def _secret(name: str, default=None):
     except Exception:
         return default
 
-USE_OPENAI = _env_flag("USE_OPENAI", False)
+USE_OPENAI = _env_flag("USE_OPENAI", bool(OPENAI_API_KEY))
 CHAT_MODEL = os.getenv("CHAT_MODEL", _secret("CHAT_MODEL", "tf-idf"))
 DATA_DIR = Path(os.getenv("DATA_DIR", _secret("DATA_DIR", "data")))
 KB_DIR = os.getenv("KB_DIR", _secret("KB_DIR", "kb"))
