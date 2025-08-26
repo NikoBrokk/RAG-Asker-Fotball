@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import numpy as np
 import streamlit as st
 
 # Lokale moduler
@@ -64,9 +65,11 @@ if HF_SPACE:
 
 
 def ensure_index() -> None:
-    """Bygg indeksen første gang eller når filer mangler."""
+    """Bygg indeksen første gang eller når filer mangler eller er korrupt."""
     vec = DATA_DIR / "vectors.npy"
     meta = DATA_DIR / "meta.jsonl"
+    need_rebuild = False
+
 
     # Hvis noen vil skru på OpenAI senere, gi tidlig beskjed om nøkkel mangler
     if USE_OPENAI and not OPENAI_API_KEY:
@@ -77,11 +80,21 @@ def ensure_index() -> None:
         st.stop()
 
     if not vec.exists() or not meta.exists():
-        st.info("Indeks ikke funnet – bygger nå …")
+                need_rebuild = True
+    else:
+        try:
+            X = np.load(vec)
+            if X.ndim != 2 or X.shape[0] == 0:
+                need_rebuild = True
+        except Exception:
+            need_rebuild = True
+
+    if need_rebuild:
+        st.info("Indeks ikke funnet eller korrupt – bygger nå …")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         try:
             build_index(KB_DIR)
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             st.error(
                 f"Ingen .md-filer funnet i '{KB_DIR}'. "
                 "Legg inn kunnskapsfiler i mappen `kb/` (f.eks. `kb/billetter.md`)."
@@ -89,7 +102,6 @@ def ensure_index() -> None:
             st.stop()
 
 
-# ---------- UI ----------
 
 st.set_page_config(page_title="Chatbot Asker Fotball", page_icon="⚽", layout="wide")
 st.title("RAG Asker Fotball")
