@@ -1,0 +1,36 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [ main ]   # evt. master
+  workflow_dispatch:      # manuelt kjørbar
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # (valgfritt) sett opp Python hvis prosjektet trenger bygging
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # (valgfritt) installer deps / bygg
+      # - run: pip install -r requirements.txt
+
+      - name: Push to Space
+        uses: huggingface/actions@v1
+        with:
+          # Bytt ut med din Space, f.eks. "vegard/my-space"
+          repo: your-org-or-user/your-space
+          # <path> = mappen som skal pushes til Space-root (bruk "." for repo-rota)
+          # Hvis appen din ligger i en undermappe, f.eks. "app/", sett path: app
+          path: .
+          # setter Space-type; kan utelates hvis Space allerede har riktig SDK
+          # type: gradio | streamlit | static | docker
+          # type: gradio
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
