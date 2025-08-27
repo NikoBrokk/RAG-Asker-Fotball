@@ -1,30 +1,37 @@
-name: Deploy to Hugging Face Space
+name: Sync to Hugging Face Space
 
 on:
   push:
-    branches: [ main ]   # evt. master hvis du bruker det
-  workflow_dispatch:      # manuelt kjørbar
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout (with LFS)
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          fetch-depth: 0
+          lfs: true
 
-      - name: Install deps (optional)
-        run: pip install -r requirements.txt
+      - name: Set git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # (valgfritt) hvis du trenger å bygge filer før push (ikke nødvendig for ren Space-sync)
+      # - name: Setup Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: "3.11"
+      # - name: Install deps
+      #   run: pip install -r requirements.txt
 
       - name: Push to Hugging Face Space
-        uses: huggingface/actions@v1
-        with:
-          repo: Gabrielsen-AI/RAG-Asker-Fotball   # ✅ ditt Space-navn
-          path: .                                 # rotmappe for appen
-          type: streamlit                         # basert på requirements.txt:contentReference[oaicite:0]{index=0}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # erstatt med din Space path
+          SPACE_URL="https://HF_USERNAME:${HF_TOKEN}@huggingface.co/spaces/Gabrielsen-AI/RAG-Asker-Fotball"
+          git push "${SPACE_URL}" HEAD:main
