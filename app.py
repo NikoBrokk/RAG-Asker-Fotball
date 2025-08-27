@@ -1,8 +1,12 @@
 """
 Streamlit-app for Asker Fotball sin RAG-demo.
 
-- Bygger en TF-IDF-indeks fra .md-filer i `kb/` første gang (eller ved behov)
+- Bygger en TF-IDF- eller OpenAI-indeks fra .md-filer i `kb/` første gang (eller ved behov)
 - Lar brukeren stille spørsmål og får et kort, kildebasert svar + topp-k kilder
+
+Denne versjonen håndterer trygt pickled numpy-arrays (allow_pickle=True) og
+støtter generering av svar via OpenAI dersom ``USE_OPENAI`` og en gyldig API-nøkkel
+er satt. Hvis ikke benyttes en ekstraktiv strategi.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import numpy as np
 import streamlit as st
 
 # Lokale moduler
-from src.answer import answer, _expand_query
+from src.answer import answer
 from src.ingest import build_index, OPENAI_API_KEY
 from src.utils import get_hf_api
 
@@ -35,12 +39,13 @@ def _env_flag(name: str, default: bool = False) -> bool:
         v = os.getenv(key)
         if v is None:
             try:
-                v = st.secrets.get(key)  # prøv å hente secret hvis det finnes
+                v = st.secrets.get(key)
             except Exception:
                 v = None
         if v is not None:
             return str(v).strip().lower() in {"1", "true", "yes", "on"}
     return default
+
 
 def _secret(name: str, default=None):
     """Trygg henter for str-secrets."""
@@ -49,12 +54,14 @@ def _secret(name: str, default=None):
     except Exception:
         return default
 
+
 USE_OPENAI = _env_flag("USE_OPENAI", bool(OPENAI_API_KEY))
 CHAT_MODEL = os.getenv("CHAT_MODEL", _secret("CHAT_MODEL", "tf-idf"))
 DATA_DIR = Path(os.getenv("DATA_DIR", _secret("DATA_DIR", "data")))
 KB_DIR = os.getenv("KB_DIR", _secret("KB_DIR", "kb"))
 DEBUG_UI = _env_flag("DEBUG_UI", False)
 HF_SPACE = os.getenv("HF_SPACE", _secret("HF_SPACE"))
+
 
 hf_space_info = None
 if HF_SPACE:
@@ -65,11 +72,14 @@ if HF_SPACE:
 
 
 def ensure_index() -> None:
-    """Bygg indeksen første gang eller når filer mangler eller er korrupt."""
+    """
+    Bygg indeksen første gang eller når filer mangler eller er korrupt.
+    Denne funksjonen tillater pickled numpy-arrays og forsøker å konvertere dem
+    til en 2D float-array for enkel validering.
+    """
     vec = DATA_DIR / "vectors.npy"
     meta = DATA_DIR / "meta.jsonl"
     need_rebuild = False
-
 
     # Hvis noen vil skru på OpenAI senere, gi tidlig beskjed om nøkkel mangler
     if USE_OPENAI and not OPENAI_API_KEY:
@@ -80,11 +90,20 @@ def ensure_index() -> None:
         st.stop()
 
     if not vec.exists() or not meta.exists():
-                need_rebuild = True
+        need_rebuild = True
     else:
         try:
-            X = np.load(vec)
-            if X.ndim != 2 or X.shape[0] == 0:
+            X = np.load(vec, allow_pickle=True)
+            # Hvis objekt-array: forsøk å stable til en matrise av floats
+            if X.dtype == object:
+                try:
+                    X_tmp = np.vstack([np.asarray(v, dtype="float32") for v in X])
+                except Exception:
+                    X_tmp = None
+                    need_rebuild = True
+                X = X_tmp if X_tmp is not None else X
+            # Sjekk at matrisen har forventet form
+            if X is None or getattr(X, "ndim", 0) != 2 or X.shape[0] == 0:
                 need_rebuild = True
         except Exception:
             need_rebuild = True
@@ -102,6 +121,7 @@ def ensure_index() -> None:
             st.stop()
 
 
+# ---------- UI ----------
 
 st.set_page_config(page_title="Chatbot Asker Fotball", page_icon="⚽", layout="wide")
 st.title("RAG Asker Fotball")
@@ -109,7 +129,6 @@ st.caption("Still et spørsmål – få svar med kilder fra klubbens informasjon
 
 ensure_index()
 
-# Statuslinje
 mode_label = "**OpenAI**" if USE_OPENAI else "**TF-IDF**"
 st.markdown(
     f"Status: indeks `ok` • Modus: {mode_label} • Modell: `{CHAT_MODEL}`  "
@@ -155,7 +174,6 @@ for i, turn in enumerate(st.session_state.chat_items, start=1):
     st.write(turn["user"])
     st.markdown("**Svar**")
     st.write(turn["answer"])
-
     # Kilder
     st.markdown("**Kilder**")
     hits = turn.get("hits", []) or []
@@ -174,7 +192,6 @@ for i, turn in enumerate(st.session_state.chat_items, start=1):
                 st.markdown(f"- `{src}` — `{hid}` (score {sc_str})")
             else:
                 st.markdown(f"- **{src}** — `{hid}` (score {sc_str})")
-
     st.divider()
 
 # Hjelp/eksempler
@@ -184,18 +201,4 @@ with st.expander("Hva kan jeg spørre om?"):
         "- Kampdager, avspark, terminliste\n"
         "- Parkering og stadioninformasjon (Føyka)\n"
         "- Medlemskap, akademi, samfunn\n"
-        "- Kontakt og praktisk info"
     )
-
-# Debug-panel (valgfritt)
-if DEBUG_UI:
-    st.sidebar.header("Debug")
-    st.sidebar.write("KB_DIR:", KB_DIR)
-    st.sidebar.write("DATA_DIR:", str(DATA_DIR))
-    if q:
-        st.sidebar.write("Expanded query:", _expand_query(q))
-
-    if HF_SPACE:
-        st.sidebar.write("HF_SPACE:", HF_SPACE)
-        st.sidebar.write("HF info:", hf_space_info)
-
