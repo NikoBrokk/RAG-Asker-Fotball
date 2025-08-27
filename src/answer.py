@@ -1,184 +1,234 @@
 """
-answer.py
-----------
-Henter svar fra en TF-IDF-indeks bygd av ingest.py.
+Henter svar fra en TF-IDF- eller OpenAI-indeks for Asker Fotball.
 
 Returnerer:
-- text: kort, ekstraktivt svar basert på de beste treffene
-- hits: liste av {id, source, score} for transparens i UI
+- text: kort, ekstraktivt eller generativt svar basert på de beste treffene
+- hits: liste av {id, source, score, ...} for transparens i UI
+
+Denne implementasjonen bygger på RAG‑Asker‑Tennis og benytter synonymer,
+dokumenttyper og en enkel reranking for å gi bedre svar. Hvis USE_OPENAI er
+aktivert og en gyldig OpenAI API-nøkkel er tilgjengelig, genereres svaret med
+ChatGPT; ellers brukes en ekstraktiv tilnærming basert på første setning av
+beste treff.
 """
 
 from __future__ import annotations
 
 import os
-import json
 import re
-from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, List, Tuple, Set
 
-import numpy as np
-import joblib
-from sklearn.metrics.pairwise import cosine_similarity
+from src.utils import env_flag
+from src.retrieve import search
 
+USE_OPENAI: bool = env_flag("USE_OPENAI", False)
+CHAT_MODEL: str = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 
-# --- Stier (samme som i ingest.py)
-DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
-VECTORS_PATH = DATA_DIR / "vectors.npy"
-META_PATH = DATA_DIR / "meta.jsonl"
-VECTORIZER_PATH = DATA_DIR / "vectorizer.pkl"
-
-
-# --- Enkle globale caches for ytelse
-_V: Optional[np.ndarray] = None
-_META: Optional[List[Dict]] = None
-_VECTORIZER = None
-
-
-def _load_index() -> Tuple[np.ndarray, List[Dict], object]:
-    """Laster (og cacher) TF-IDF-matrisen, metadata og vectorizer."""
-    global _V, _META, _VECTORIZER
-
-    if _V is None or _META is None or _VECTORIZER is None:
-        if not VECTORS_PATH.exists() or not META_PATH.exists() or not VECTORIZER_PATH.exists():
-            raise FileNotFoundError(
-                "Indeks mangler. Kjør først bygging (build_index) i ingest.py."
-            )
-
-        _V = np.load(VECTORS_PATH)
-        _META = [json.loads(line) for line in META_PATH.read_text(encoding="utf-8").splitlines()]
-        _VECTORIZER = joblib.load(VECTORIZER_PATH)
-
-        # Robusthet: sørg for samsvar
-        if _V.shape[0] != len(_META):
-            raise RuntimeError(
-                f"Ulikt antall rader i vectors ({_V.shape[0]}) og meta ({len(_META)}). "
-                "Bygg indeksen på nytt."
-            )
-
-    return _V, _META, _VECTORIZER
-
-
-def _sentences(text: str) -> List[str]:
-    """Splitt tekst i (enkle) setninger."""
-    text = re.sub(r"\s+", " ", text.strip())
-    if not text:
-        return []
-    # Del på punktum, utrop, spørsmål – behold skilletegn
-    parts = re.split(r"(?<=[\.\!\?])\s+", text)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _summarize_snippets(text: str, query: str, max_chars: int = 420) -> str:
-    """
-    Velg 1–3 setninger fra dokumentet som matcher spørringen.
-    Hvis ingen match: ta de første setningene.
-    """
-    sents = _sentences(text)
-    if not sents:
-        return ""
-
-    q_terms = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 2]
-    picks: List[str] = []
-
-    # Score setninger grovt på overlap
-    def score_sent(s: str) -> int:
-        s_low = s.lower()
-        return sum(1 for t in q_terms if t in s_low)
-
-    ranked = sorted(sents, key=score_sent, reverse=True)
-    for s in ranked[:4]:
-        if score_sent(s) > 0:
-            picks.append(s)
-        if len(" ".join(picks)) > max_chars:
-            break
-
-    if not picks:
-        picks = sents[:2]
-
-    out = " ".join(picks)
-    if len(out) > max_chars:
-        out = out[:max_chars].rsplit(" ", 1)[0] + "…"
-    return out
-
-
-def _expand_query(q: str) -> str:
-    """
-    Litt enkel synonym-utvidelse for domenet (kan bygges ut senere).
-    Returnerer en utvidet streng som kan gi bedre recall i TF-IDF.
-    """
-    SYNS = {
-        "billetter": ["billett", "billetter", "sesongkort", "pris", "priser", "ticket", "inngang"],
-        "kamp": ["kamp", "kamper", "terminliste", "kampstart", "avspark", "match"],
-        "parkering": ["parkering", "parkere", "p-plass"],
-        "stadion": ["stadion", "arena", "føyka", "føykA", "anlegg"],
-        "medlemskap": ["medlemskap", "medlem", "kontingent"],
-        "kontakt": ["kontakt", "telefon", "epost", "e-post", "mail"],
-        "åpningstider": ["åpningstider", "åpent", "åpner"],
-        "sponsor": ["sponsor", "partnere", "bedriftsnettverk", "marked"],
-    }
-    q_low = q.lower()
-    extra: List[str] = []
-    for base, alts in SYNS.items():
-        if base in q_low:
-            extra.extend(alts)
-    if extra:
-        return q + " " + " ".join(sorted(set(extra)))
-    return q
-
-
-def _retrieve(query: str, k: int = 5) -> Tuple[List[int], np.ndarray]:
-    """Returnerer indeksene til topp-k dokumenter og tilsvarende score."""
-    V, _, vectorizer = _load_index()
-    q_expanded = _expand_query(query)
-    qv = vectorizer.transform([q_expanded]).toarray()  # (1, d)
-    sims = cosine_similarity(qv, V)[0]                 # (n_docs,)
-    order = np.argsort(-sims)[:k]
-    return order.tolist(), sims
-
-
-def answer(query: str, k: int = 5) -> Tuple[str, List[Dict]]:
-    """
-    Hovedfunksjon brukt av app.py
-    - query: brukerens spørsmål
-    - k: hvor mange dokumenter som returneres i hits
-    """
+# Initialiser OpenAI-klient dersom aktivert
+_openai = None
+if USE_OPENAI:
     try:
-        order, sims = _retrieve(query, k=max(k, 5))
-        _, meta, _ = _load_index()
-    except FileNotFoundError as e:
-        return (
-            "Indeksen er ikke bygget ennå. Bygg først (scripts/build_index.py) eller "
-            "la appen bygge automatisk ved oppstart.",
-            [],
+        from openai import OpenAI  # type: ignore
+        api_key = os.getenv("OPENAI_API_KEY")
+        project = os.getenv("OPENAI_PROJECT")
+        if api_key:
+            _openai = OpenAI(api_key=api_key, project=project or None)
+        else:
+            _openai = OpenAI()  # stol på globale config
+    except Exception:
+        _openai = None
+
+# Systemprompt brukt for generativ modus
+SYSTEM_PROMPT = (
+    "Du er en vennlig og hjelpsom assistent for Asker Fotball.\n"
+    "Svar kort (1–3 setninger) på norsk bokmål, med egne ord. "
+    "Hvis kildene ikke dekker spørsmålet, si 'Jeg vet ikke'."
+)
+
+# Synonymer for utvidet søk i fotballdomenet
+SYN: Dict[str, List[str]] = {
+    "billett": [
+        "billett", "billetter", "sesongkort", "sesong-kort", "sesongabonnement",
+        "foyka+", "foyka plus", "pris", "priser", "kostnad", "inngang", "adgang"
+    ],
+    "kamp": [
+        "kamp", "kamper", "terminliste", "kampdag", "kampdager", "avspark",
+        "match", "program", "kampstart"
+    ],
+    "parkering": [
+        "parkering", "parkere", "p-plass", "p-plasser", "parkeringsplass",
+        "easypark", "bil"
+    ],
+    "stadion": [
+        "stadion", "arena", "føyka", "foyka", "anlegg", "tribune", "stadio",
+        "fotballhuset"
+    ],
+    "medlemskap": [
+        "medlemskap", "medlem", "kontingent", "medlemskontingent",
+        "innmelding", "bli medlem"
+    ],
+    "kontakt": [
+        "kontakt", "telefon", "tlf", "mail", "e-post", "email", "adresse", "epost"
+    ],
+    "åpningstider": [
+        "åpningstider", "åpner", "åpent", "stengt", "åpningstid"
+    ],
+    "sponsor": [
+        "sponsor", "sponsorer", "partner", "partnere", "marked", "bedriftsnettverk"
+    ],
+    "samfunn": [
+        "samfunn", "gatelag", "asker united", "community", "sammen for fotball",
+        "aktiviteter"
+    ],
+    "historie": [
+        "historie", "historisk", "grunnlagt", "stiftet", "rekord", "legender",
+        "fakta"
+    ],
+    "lag": [
+        "lag", "spillere", "spillertropp", "trener", "keeper", "forsvar",
+        "midtbane", "angrep", "a-lag"
+    ],
+    "marked": [
+        "marked", "partner", "sponsor", "sponsorer", "nettverk", "synlighet"
+    ],
+    "aktivitet": [
+        "aktivitet", "akademi", "camp", "kurs", "leir", "trening", "lek"
+    ],
+}
+
+# Kart over dokumenttyper til triggere for foretrukne kategorier
+DOC_HINTS: Dict[str, List[str]] = {
+    "billett": SYN["billett"],
+    "terminliste": SYN["kamp"],
+    "kontakt": SYN["kontakt"],
+    "samfunn": SYN["samfunn"],
+    "historie": SYN["historie"],
+    "stadion": SYN["stadion"],
+    "lag": SYN["lag"],
+    "marked": SYN["marked"],
+    "aktivitet": SYN["aktivitet"],
+}
+
+
+def _expand_query(q: str) -> Tuple[str, Set[str], List[str]]:
+    """
+    Fjern støy (klubbnavn), identifiser foretrukne dokumenttyper basert på triggere,
+    og bygg en utvidet spørring med synonymer.
+
+    Returnerer (expanded_query, preferred_doc_types, extra_terms).
+    """
+    ql = q.lower()
+    # Fjern klubbnavn for å unngå bias
+    ql = re.sub(r"\basker fotball\b|\basker fk\b|\bføyka\b", " ", ql)
+    ql = ql.strip()
+
+    extra: List[str] = []
+    preferred: Set[str] = set()
+
+    # Legg til doc hints basert på triggere
+    for dt, triggers in DOC_HINTS.items():
+        if any(t in ql for t in triggers):
+            preferred.add(dt)
+    # Legg til utvidede søkeord basert på synonymlistene
+    for key, words in SYN.items():
+        if any(t in ql for t in words):
+            extra += words
+    expanded = q if not extra else q + " " + " ".join(sorted(set(extra)))
+    return expanded, preferred, sorted(set(extra))
+
+
+def _first_sentence(txt: str) -> str:
+    """Returner første komplette setning (slutter med punktum, utrop eller spørsmålstegn)"""
+    txt = re.sub(r"\s+", " ", (txt or "").strip())
+    m = re.search(r"(.+?[.!?])\s", txt + " ")
+    return (m.group(1) if m else txt)[:280]
+
+
+def _extractive(hits: List[Dict]) -> str:
+    """
+    En enkel ekstraktiv strategi: bruk første setning fra første treff.
+    """
+    if not hits:
+        return "Jeg vet ikke"
+    return _first_sentence(hits[0].get("text", "")) or "Jeg vet ikke"
+
+
+def _score(h: Dict, keys: List[str], preferred: Set[str]) -> float:
+    """
+    Beregn en heuristisk score for et dokument basert på:
+    - Basisscore fra søket (cosinus-similaritet)
+    - Bonus hvis dokumenttypen er i preferred
+    - Bonus hvis søkeordene forekommer i teksten
+    """
+    base = float(h.get("score", 0.0))
+    bonus = 0.15 if h.get("doc_type") in preferred else 0.0
+    txt = (h.get("text") or "").lower()
+    bonus += min(0.10, 0.02 * sum(1 for t in keys if t in txt))
+    return base + bonus
+
+
+def _rerank(hits: List[Dict], preferred: Set[str], keys: List[str], k: int, min_score: float = 0.15) -> List[Dict]:
+    """
+    Rerank treff basert på `_score` og filtrer bort lave scores.
+    """
+    scored = [(h, _score(h, keys, preferred)) for h in hits]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    good = [h for h, s in scored if s >= min_score]
+    return good[:k] if good else []
+
+
+def _llm(q: str, hits: List[Dict]) -> str:
+    """
+    Generer et svar med OpenAI Chat API dersom `_openai` er tilgjengelig.
+    Bruker de fem beste dokumentbitene som kontekst sammen med tidligere meldinger.
+    """
+    if _openai is None:
+        return _extractive(hits)
+    # Bygg kontekst av topp 5 utdrag
+    ctx = "\n\n".join(f"Utdrag {i+1}:\n{h.get('text','')}" for i, h in enumerate(hits[:5]))
+    # Hent historikk fra Streamlit session_state hvis tilgjengelig
+    history_msgs = []
+    try:
+        import streamlit as st  # type: ignore
+        for prev in st.session_state.get("chat_items", [])[-3:]:
+            uq = prev.get("user", "")
+            ua = prev.get("answer", "")
+            if uq:
+                history_msgs.append({"role": "user", "content": uq})
+            if ua:
+                history_msgs.append({"role": "assistant", "content": ua})
+    except Exception:
+        history_msgs = []
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += history_msgs
+    messages.append({
+        "role": "user",
+        "content": f"Spørsmål: {q}\n\nKontekst:\n{ctx}\n\nInstruks: Svar med egne ord i 1–3 setninger."
+    })
+    try:
+        r = _openai.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=150
         )
-    except Exception as e:
-        return (f"Noe gikk galt ved søk: {e}", [])
-
-    # Lag kort svar ved å kombinere 2–3 beste snippets
-    snippets: List[str] = []
-    for i in order[:3]:
-        txt = meta[i].get("text", "")
-        snip = _summarize_snippets(txt, query, max_chars=280)
-        if snip:
-            snippets.append(snip)
-
-    text = " ".join(snippets).strip()
-    if not text:
-        text = "Fant ingen gode treff i kunnskapsbasen."
-
-    # Kilder til UI
-    hits: List[Dict] = []
-    for i in order[:k]:
-        hits.append(
-            {
-                "id": meta[i].get("id", f"doc-{i}"),
-                "source": meta[i].get("source", "?"),
-                "score": float(sims[i]),
-            }
-        )
-
-    return text, hits
+        return (r.choices[0].message.content or "").strip()
+    except Exception:
+        return _extractive(hits)
 
 
-# Eksporter _expand_query slik app.py kan importere den
-__all__ = ["answer", "_expand_query"]
+def answer(q: str, k: int = 6) -> Tuple[str, List[Dict]]:
+    """
+    Hovedfunksjon brukt av Streamlit-appen.
+    Returnerer et kort svar og en liste med treff (kilder).
+    """
+    qx, preferred, keys = _expand_query(q)
+    raw_hits = search(qx, max(k * 2, 6))
+    hits = _rerank(raw_hits, preferred, keys, k)
+    if not hits:
+        # Ingen gode treff – returner rå treff for transparens
+        return "Jeg vet ikke", raw_hits[:k]
+    out = _llm(q, hits) if USE_OPENAI and _openai is not None else _extractive(hits)
+    if not out or len(out.split()) < 2:
+        out = "Jeg vet ikke"
+    return out, hits
