@@ -28,10 +28,21 @@ jobs:
       # - name: Install deps
       #   run: pip install -r requirements.txt
 
-      - name: Push to Hugging Face Space
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          # erstatt med din Space path
-          SPACE_URL="https://HF_USERNAME:${HF_TOKEN}@huggingface.co/spaces/Gabrielsen-AI/RAG-Asker-Fotball"
-          git push "${SPACE_URL}" HEAD:main
+
+          - name: Push to Hugging Face Space
+            env:
+              HF_TOKEN: ${{ secrets.HF_TOKEN }}
+            run: |
+              set -e
+              SPACE_URL="https://HF_USERNAME:${HF_TOKEN}@huggingface.co/spaces/Gabrielsen-AI/RAG-Asker-Fotball"
+          
+              # Sjekk ut hvilken branch Space bruker. Hvis du vet det er 'main', behold det.
+              TARGET_BRANCH="main"
+          
+              # Legg til remote, forsøk å hente (går fint om den ikke finnes)
+              git remote add space "${SPACE_URL}"
+              git fetch space "${TARGET_BRANCH}" || true
+          
+              # Force push første gang for å align’e historiene.
+              git push --force-with-lease space HEAD:${TARGET_BRANCH}
+
