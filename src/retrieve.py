@@ -49,6 +49,8 @@ if USE_OPENAI:
         project = os.getenv("OPENAI_PROJECT")
         if api_key:
             _openai = OpenAI(api_key=api_key, project=project or None)
+        else:
+            _openai = OpenAI()  # fallback til standard config
     except Exception:
         _openai = None
 
@@ -63,6 +65,7 @@ _META_OAI: List[Dict] = []
 
 
 # ---------- Utils ----------
+
 
 def _read_text_file(p: Path) -> str:
     try:
@@ -107,7 +110,7 @@ def _infer_doc_type(name: str, text: str) -> str:
     # Kontaktinformasjon
     if any(w in low for w in ["kontakt", "telefon", "tlf", "mail", "e-post", "epost", "adresse", "kirkeveien", "postadresse"]):
         return "kontakt"
-    # Samfunn / samfunnslag / gatelag / united
+    # Samfunn / gatelag / united
     if any(w in low for w in ["samfunn", "gatelag", "asker united", "hæppe", "brobygger", "samfunnslag", "aktivt lokalsamfunn", "sammen for fotball"]):
         return "samfunn"
     # Historie og fakta
@@ -211,13 +214,14 @@ def _load_corpus() -> List[Dict]:
                     "version_date": meta.get("version_date"),
                     "page": page,
                     "chunk_idx": ci,
-                    "id": f"{src}#{ci}",
+                    "id": f"{Path(src).as_posix()}#{ci}",
                 })
                 ci += 1
     return docs
 
 
 # ---------- Indeksering ----------
+
 
 def _ensure_index_tfidf() -> None:
     """Lazy bygging av TF‑IDF indeks ved første kall."""
@@ -246,7 +250,7 @@ def _ensure_index_tfidf() -> None:
 
 
 def _ensure_index_openai() -> None:
-    """Lazy last OpenAI-indeks fra disk."""
+    """Lazy last OpenAI-indeks fra disk og håndter pickled arrays."""
     global _EMB, _META_OAI
     if _EMB is not None and _META_OAI:
         return
@@ -256,7 +260,22 @@ def _ensure_index_openai() -> None:
         raise FileNotFoundError(
             "OpenAI-indeks mangler. Kjør ingestion med USE_OPENAI=1 for å generere embeddings."
         )
-    _EMB = np.load(vec_path)
+    # Last vektorfil med allow_pickle og håndter objekt-array
+    try:
+        arr = np.load(vec_path, allow_pickle=True)
+    except Exception as e:
+        raise RuntimeError(f"Kunne ikke laste vektorfil '{vec_path}': {e}")
+    if arr.dtype == object:
+        try:
+            arr = np.vstack([np.asarray(v, dtype="float32") for v in arr])
+        except Exception as e:
+            raise RuntimeError(
+                f"Vektorfil '{vec_path}' inneholder uventet format: {e}. "
+                "Bygg indeksen på nytt med ingest.py."
+            )
+    else:
+        arr = arr.astype("float32")
+    _EMB = arr
     _META_OAI = []
     with meta_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -264,6 +283,7 @@ def _ensure_index_openai() -> None:
 
 
 # ---------- Public API ----------
+
 
 def search(query: str, k: int = 6) -> List[Dict]:
     """
